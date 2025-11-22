@@ -369,13 +369,9 @@ InfoSec_Project/
 
 ## Contributors
 
-- [Team Member 1]
-- [Team Member 2]
-- [Team Member 3]
-
-## License
-
-This project is for educational purposes only.
+- Huda Nyazee
+- Umama Saif
+- Aamina Bukhari
 
 ## References
 
