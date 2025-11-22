@@ -1,0 +1,20 @@
+{
+  "name": "secure-e2ee-messaging",
+  "version": "1.0.0",
+  "description": "Secure End-to-End Encrypted Messaging & File-Sharing System",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "cd server && nodemon index.js",
+    "client": "cd client && npm start",
+    "install-all": "npm install && cd server && npm install && cd ../client && npm install"
+  },
+  "keywords": ["e2ee", "encryption", "messaging", "security"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.0.1"
+  }
+}
+
