@@ -70,8 +70,8 @@ router.post('/send', async (req, res) => {
     // Emit real-time message to receiver via Socket.io
     const io = req.app.get('io');
     if (io) {
-      console.log(`Emitting new-message to user-${receiverId}`);
-      io.to(`user-${receiverId}`).emit('new-message', {
+      console.log(`Emitting new-message to user_${receiverId}`);
+      io.to(`user_${receiverId}`).emit('new-message', {
         messageId: message._id,
         senderId: req.user.userId,
         receiverId: receiverId,

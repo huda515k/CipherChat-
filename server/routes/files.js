@@ -175,7 +175,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     // Emit real-time notification to receiver
     const io = req.app.get('io');
     if (io) {
-      io.to(`user-${receiverId}`).emit('new-file', {
+      io.to(`user_${receiverId}`).emit('new-file', {
         fileId: fileRecord._id,
         senderId: req.user.userId,
         filename: originalFilename,

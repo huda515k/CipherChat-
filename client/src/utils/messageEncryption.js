@@ -19,11 +19,11 @@ export async function encryptMessage(userId, targetUserId, plaintext) {
   try {
     // Get session key
     const sessionData = await getSessionKey(userId, targetUserId);
-    // Sort user IDs to match the shared secret generation
-    const userIds = [userId, targetUserId].sort();
+    // Use shared secret hash as salt (consistent with key exchange protocol)
+    const salt = await hashSHA256(sessionData.sharedSecret);
     const sessionKey = await deriveAESKey(
       sessionData.sharedSecret,
-      await hashSHA256(`${userIds[0]}_${userIds[1]}`),
+      salt,
       'E2EE_SESSION_KEY'
     );
 
@@ -66,11 +66,11 @@ export async function decryptMessage(userId, targetUserId, encryptedData) {
 
     // Get session key
     const sessionData = await getSessionKey(userId, targetUserId);
-    // Sort user IDs to match the shared secret generation
-    const userIds = [userId, targetUserId].sort();
+    // Use shared secret hash as salt (consistent with key exchange protocol)
+    const salt = await hashSHA256(sessionData.sharedSecret);
     const sessionKey = await deriveAESKey(
       sessionData.sharedSecret,
-      await hashSHA256(`${userIds[0]}_${userIds[1]}`),
+      salt,
       'E2EE_SESSION_KEY'
     );
 

@@ -13,14 +13,44 @@ export function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+// Helper function to validate and clean base64 string
+function isValidBase64(str) {
+  if (!str || typeof str !== 'string') return false;
+  // Remove whitespace
+  const cleaned = str.trim().replace(/\s/g, '');
+  // Base64 regex: only A-Z, a-z, 0-9, +, /, and = for padding
+  const base64Regex = /^[A-Za-z0-9+/]*={0,2}$/;
+  // Length must be multiple of 4 (after padding)
+  return base64Regex.test(cleaned) && cleaned.length % 4 === 0 && cleaned.length > 0;
+}
+
 // Convert Base64 to ArrayBuffer
 export function base64ToArrayBuffer(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+  if (!base64) {
+    throw new Error('Base64 string is required');
   }
-  return bytes.buffer;
+  
+  // Ensure it's a string
+  let base64Str = String(base64);
+  
+  // Remove whitespace and newlines
+  base64Str = base64Str.trim().replace(/\s/g, '').replace(/\n/g, '');
+  
+  // Validate base64 format
+  if (!isValidBase64(base64Str)) {
+    throw new Error(`Invalid base64 format: The string contains invalid characters. Input preview: ${base64Str.substring(0, 50)}...`);
+  }
+  
+  try {
+    const binary = atob(base64Str);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes.buffer;
+  } catch (error) {
+    throw new Error(`Failed to decode base64: ${error.message}. Input preview: ${base64Str.substring(0, 50)}...`);
+  }
 }
 
 // Convert string to ArrayBuffer
@@ -35,9 +65,13 @@ function arrayBufferToString(buffer) {
 
 /**
  * Generate RSA key pair (2048 bits)
+ * Note: We generate the key with RSA-OAEP for encryption, but the same key material
+ * can be imported with RSA-PSS algorithm for signing
  */
 export async function generateRSAKeyPair() {
   try {
+    // Generate RSA key pair for encryption (RSA-OAEP)
+    // The same key material can be imported with RSA-PSS for signing
     const keyPair = await window.crypto.subtle.generateKey(
       {
         name: 'RSA-OAEP',
@@ -45,8 +79,8 @@ export async function generateRSAKeyPair() {
         publicExponent: new Uint8Array([1, 0, 1]),
         hash: 'SHA-256'
       },
-      true, // extractable
-      ['encrypt', 'decrypt']
+      true, // extractable - allows us to export and re-import with different algorithm
+      ['encrypt', 'decrypt'] // Only encryption usages for generation
     );
 
     // Export keys
@@ -94,10 +128,14 @@ export async function generateECCKeyPair() {
 }
 
 /**
- * Import RSA public key from Base64
+ * Import RSA public key from Base64 (for encryption)
  */
 export async function importRSAPublicKey(base64Key) {
   try {
+    // Ensure base64Key is a string
+    if (!base64Key || typeof base64Key !== 'string') {
+      throw new Error('RSA public key must be a valid base64 string');
+    }
     const keyData = base64ToArrayBuffer(base64Key);
     return await window.crypto.subtle.importKey(
       'spki',
@@ -111,15 +149,45 @@ export async function importRSAPublicKey(base64Key) {
     );
   } catch (error) {
     console.error('Error importing RSA public key:', error);
-    throw error;
+    throw new Error(`Failed to import RSA public key: ${error.message}`);
   }
 }
 
 /**
- * Import RSA private key from Base64
+ * Import RSA public key from Base64 (for signature verification)
+ */
+export async function importRSAPublicKeyForVerification(base64Key) {
+  try {
+    // Ensure base64Key is a string
+    if (!base64Key || typeof base64Key !== 'string') {
+      throw new Error('RSA public key must be a valid base64 string');
+    }
+    const keyData = base64ToArrayBuffer(base64Key);
+    return await window.crypto.subtle.importKey(
+      'spki',
+      keyData,
+      {
+        name: 'RSA-PSS',
+        hash: 'SHA-256'
+      },
+      false,
+      ['verify']
+    );
+  } catch (error) {
+    console.error('Error importing RSA public key for verification:', error);
+    throw new Error(`Failed to import RSA public key for verification: ${error.message}`);
+  }
+}
+
+/**
+ * Import RSA private key from Base64 (for decryption)
  */
 export async function importRSAPrivateKey(base64Key) {
   try {
+    // Ensure base64Key is a string
+    if (!base64Key || typeof base64Key !== 'string') {
+      throw new Error('RSA private key must be a valid base64 string');
+    }
     const keyData = base64ToArrayBuffer(base64Key);
     return await window.crypto.subtle.importKey(
       'pkcs8',
@@ -133,7 +201,33 @@ export async function importRSAPrivateKey(base64Key) {
     );
   } catch (error) {
     console.error('Error importing RSA private key:', error);
-    throw error;
+    throw new Error(`Failed to import RSA private key: ${error.message}`);
+  }
+}
+
+/**
+ * Import RSA private key from Base64 (for signing)
+ */
+export async function importRSAPrivateKeyForSigning(base64Key) {
+  try {
+    // Ensure base64Key is a string
+    if (!base64Key || typeof base64Key !== 'string') {
+      throw new Error('RSA private key must be a valid base64 string');
+    }
+    const keyData = base64ToArrayBuffer(base64Key);
+    return await window.crypto.subtle.importKey(
+      'pkcs8',
+      keyData,
+      {
+        name: 'RSA-PSS',
+        hash: 'SHA-256'
+      },
+      false,
+      ['sign']
+    );
+  } catch (error) {
+    console.error('Error importing RSA private key for signing:', error);
+    throw new Error(`Failed to import RSA private key for signing: ${error.message}`);
   }
 }
 
@@ -142,6 +236,10 @@ export async function importRSAPrivateKey(base64Key) {
  */
 export async function importECCPublicKey(base64Key) {
   try {
+    // Ensure base64Key is a string
+    if (!base64Key || typeof base64Key !== 'string') {
+      throw new Error('ECC public key must be a valid base64 string');
+    }
     const keyData = base64ToArrayBuffer(base64Key);
     return await window.crypto.subtle.importKey(
       'spki',
@@ -155,7 +253,7 @@ export async function importECCPublicKey(base64Key) {
     );
   } catch (error) {
     console.error('Error importing ECC public key:', error);
-    throw error;
+    throw new Error(`Failed to import ECC public key: ${error.message}`);
   }
 }
 
@@ -164,6 +262,10 @@ export async function importECCPublicKey(base64Key) {
  */
 export async function importECCPrivateKey(base64Key) {
   try {
+    // Ensure base64Key is a string
+    if (!base64Key || typeof base64Key !== 'string') {
+      throw new Error('ECC private key must be a valid base64 string');
+    }
     const keyData = base64ToArrayBuffer(base64Key);
     return await window.crypto.subtle.importKey(
       'pkcs8',
@@ -177,7 +279,7 @@ export async function importECCPrivateKey(base64Key) {
     );
   } catch (error) {
     console.error('Error importing ECC private key:', error);
-    throw error;
+    throw new Error(`Failed to import ECC private key: ${error.message}`);
   }
 }
 
@@ -186,8 +288,44 @@ export async function importECCPrivateKey(base64Key) {
  */
 export async function encryptRSA(publicKey, data) {
   try {
+    // Validate inputs
+    if (!publicKey) {
+      throw new Error('Public key is required but was null or undefined');
+    }
+    if (typeof publicKey !== 'string') {
+      throw new Error(`Public key must be a base64 string, got type: ${typeof publicKey}`);
+    }
+    if (publicKey.trim().length === 0) {
+      throw new Error('Public key is empty');
+    }
+    
+    if (!data) {
+      throw new Error('Data to encrypt is required but was null or undefined');
+    }
+    if (typeof data !== 'string') {
+      throw new Error(`Data to encrypt must be a string, got type: ${typeof data}`);
+    }
+    
+    // RSA-OAEP with 2048-bit key and SHA-256 can encrypt max ~214 bytes
+    // Check if data is too large
+    const dataBuffer = stringToArrayBuffer(data);
+    const maxSize = 214; // Safe limit for 2048-bit RSA-OAEP with SHA-256
+    
+    if (dataBuffer.length > maxSize) {
+      throw new Error(`Data too large for RSA encryption: ${dataBuffer.length} bytes (max: ${maxSize} bytes)`);
+    }
+    
+    console.log('Encrypting with RSA:', {
+      publicKeyLength: publicKey.length,
+      publicKeyPreview: publicKey.substring(0, 50) + '...',
+      dataLength: data.length,
+      dataPreview: data.substring(0, 100) + (data.length > 100 ? '...' : '')
+    });
+    
+    // Import the public key
     const key = await importRSAPublicKey(publicKey);
-    const dataBuffer = typeof data === 'string' ? stringToArrayBuffer(data) : data;
+    
+    // Encrypt
     const encrypted = await window.crypto.subtle.encrypt(
       {
         name: 'RSA-OAEP'
@@ -195,10 +333,17 @@ export async function encryptRSA(publicKey, data) {
       key,
       dataBuffer
     );
+    
     return arrayBufferToBase64(encrypted);
   } catch (error) {
     console.error('Error encrypting with RSA:', error);
-    throw error;
+    console.error('Error details:', {
+      name: error.name,
+      message: error.message,
+      stack: error.stack
+    });
+    const errorMessage = error.message || error.toString() || 'Unknown error';
+    throw new Error(`Failed to encrypt with RSA: ${errorMessage}`);
   }
 }
 
@@ -207,8 +352,29 @@ export async function encryptRSA(publicKey, data) {
  */
 export async function decryptRSA(privateKey, encryptedData) {
   try {
+    // Ensure privateKey is a string
+    if (typeof privateKey !== 'string') {
+      throw new Error('Private key must be a base64 string');
+    }
+    if (typeof encryptedData !== 'string') {
+      throw new Error('Encrypted data must be a base64 string');
+    }
+    
+    console.log('🔐 decryptRSA called:');
+    console.log('   encryptedData length:', encryptedData.length);
+    console.log('   encryptedData preview:', encryptedData.substring(0, 100));
+    
     const key = await importRSAPrivateKey(privateKey);
+    console.log('   ✅ Private key imported');
+    
     const encryptedBuffer = base64ToArrayBuffer(encryptedData);
+    console.log('   ✅ Base64 decoded, buffer length:', encryptedBuffer.byteLength);
+    
+    // Validate buffer size (RSA-OAEP 2048-bit should be exactly 256 bytes)
+    if (encryptedBuffer.byteLength !== 256) {
+      throw new Error(`Invalid encrypted data size: ${encryptedBuffer.byteLength} bytes. Expected exactly 256 bytes for RSA-OAEP 2048-bit.`);
+    }
+    
     const decrypted = await window.crypto.subtle.decrypt(
       {
         name: 'RSA-OAEP'
@@ -216,10 +382,24 @@ export async function decryptRSA(privateKey, encryptedData) {
       key,
       encryptedBuffer
     );
+    console.log('   ✅ RSA decryption successful, decrypted length:', decrypted.byteLength);
     return arrayBufferToString(decrypted);
   } catch (error) {
-    console.error('Error decrypting with RSA:', error);
-    throw error;
+    console.error('❌ Error decrypting with RSA:', error);
+    console.error('   Error name:', error.name);
+    console.error('   Error message:', error.message);
+    console.error('   Error stack:', error.stack);
+    
+    // Provide more specific error messages
+    if (error.message.includes('too small') || error.message.includes('The provided data is too small')) {
+      throw new Error(`RSA decryption failed: Encrypted data is too small (${encryptedData.length} chars). This usually means the data was corrupted or truncated.`);
+    } else if (error.message.includes('Invalid base64')) {
+      throw new Error(`RSA decryption failed: Invalid base64 format. Data preview: ${encryptedData.substring(0, 50)}`);
+    } else if (error.name === 'OperationError') {
+      throw new Error(`RSA decryption failed: ${error.message}. This could indicate corrupted data or wrong key.`);
+    }
+    
+    throw new Error(`Failed to decrypt with RSA: ${error.message}`);
   }
 }
 
@@ -252,15 +432,32 @@ export async function deriveECDHSecret(privateKey, publicKey) {
  */
 export async function deriveAESKey(sharedSecret, salt, info) {
   try {
+    // Ensure sharedSecret is a string
+    if (!sharedSecret || typeof sharedSecret !== 'string') {
+      throw new Error('Shared secret must be a valid base64 string');
+    }
+    
     const secretBuffer = base64ToArrayBuffer(sharedSecret);
-    const saltBuffer = salt ? base64ToArrayBuffer(salt) : new Uint8Array(32);
+    
+    // Handle salt - can be base64 string or already a buffer
+    let saltBuffer;
+    if (!salt) {
+      saltBuffer = new Uint8Array(32);
+    } else if (typeof salt === 'string') {
+      saltBuffer = base64ToArrayBuffer(salt);
+    } else if (salt instanceof Uint8Array || salt instanceof ArrayBuffer) {
+      saltBuffer = salt instanceof ArrayBuffer ? new Uint8Array(salt) : salt;
+    } else {
+      throw new Error('Salt must be a base64 string, Uint8Array, or ArrayBuffer');
+    }
+    
     const infoBuffer = info ? stringToArrayBuffer(info) : new Uint8Array(0);
 
     // Import the shared secret as a key
     const baseKey = await window.crypto.subtle.importKey(
       'raw',
       secretBuffer,
-      'HKDF',
+      { name: 'HKDF' },
       false,
       ['deriveBits', 'deriveKey']
     );
@@ -285,7 +482,7 @@ export async function deriveAESKey(sharedSecret, salt, info) {
     return aesKey;
   } catch (error) {
     console.error('Error deriving AES key:', error);
-    throw error;
+    throw new Error(`Failed to derive AES key: ${error.message}`);
   }
 }
 
@@ -294,6 +491,14 @@ export async function deriveAESKey(sharedSecret, salt, info) {
  */
 export async function encryptAESGCM(key, plaintext) {
   try {
+    // Validate key
+    if (!key || !(key instanceof CryptoKey)) {
+      throw new Error('Key must be a CryptoKey object');
+    }
+    if (key.algorithm.name !== 'AES-GCM') {
+      throw new Error('Key algorithm must be AES-GCM');
+    }
+    
     // Generate random IV (96 bits for GCM)
     const iv = window.crypto.getRandomValues(new Uint8Array(12));
     
@@ -322,7 +527,7 @@ export async function encryptAESGCM(key, plaintext) {
     };
   } catch (error) {
     console.error('Error encrypting with AES-GCM:', error);
-    throw error;
+    throw new Error(`Failed to encrypt with AES-GCM: ${error.message}`);
   }
 }
 
@@ -331,6 +536,14 @@ export async function encryptAESGCM(key, plaintext) {
  */
 export async function decryptAESGCM(key, ciphertext, iv, tag) {
   try {
+    // Validate key
+    if (!key || !(key instanceof CryptoKey)) {
+      throw new Error('Key must be a CryptoKey object');
+    }
+    if (key.algorithm.name !== 'AES-GCM') {
+      throw new Error('Key algorithm must be AES-GCM');
+    }
+    
     const ciphertextBuffer = base64ToArrayBuffer(ciphertext);
     const ivBuffer = base64ToArrayBuffer(iv);
     const tagBuffer = base64ToArrayBuffer(tag);
@@ -353,7 +566,7 @@ export async function decryptAESGCM(key, ciphertext, iv, tag) {
     return arrayBufferToString(decrypted);
   } catch (error) {
     console.error('Error decrypting with AES-GCM:', error);
-    throw error;
+    throw new Error(`Failed to decrypt with AES-GCM: ${error.message}`);
   }
 }
 
@@ -370,7 +583,15 @@ export function generateNonce() {
  */
 export async function signData(privateKey, data) {
   try {
-    const key = await importRSAPrivateKey(privateKey);
+    // Ensure privateKey is a string
+    if (typeof privateKey !== 'string') {
+      throw new Error('Private key must be a base64 string');
+    }
+    if (typeof data !== 'string') {
+      throw new Error('Data to sign must be a string');
+    }
+    
+    const key = await importRSAPrivateKeyForSigning(privateKey);
     const dataBuffer = stringToArrayBuffer(data);
     
     const signature = await window.crypto.subtle.sign(
@@ -385,7 +606,7 @@ export async function signData(privateKey, data) {
     return arrayBufferToBase64(signature);
   } catch (error) {
     console.error('Error signing data:', error);
-    throw error;
+    throw new Error(`Failed to sign data: ${error.message}`);
   }
 }
 
@@ -394,7 +615,7 @@ export async function signData(privateKey, data) {
  */
 export async function verifySignature(publicKey, signature, data) {
   try {
-    const key = await importRSAPublicKey(publicKey);
+    const key = await importRSAPublicKeyForVerification(publicKey);
     const signatureBuffer = base64ToArrayBuffer(signature);
     const dataBuffer = stringToArrayBuffer(data);
 

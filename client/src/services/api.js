@@ -1,6 +1,15 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5001/api';
+// Auto-detect API URL based on current page protocol
+const getAPIBaseURL = () => {
+  if (process.env.REACT_APP_API_URL) {
+    return process.env.REACT_APP_API_URL;
+  }
+  // Use same protocol as the current page
+  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+  return `${protocol}//localhost:5001/api`;
+};
+const API_BASE_URL = getAPIBaseURL();
 
 // Create axios instance
 const api = axios.create({

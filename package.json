@@ -7,14 +7,21 @@
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "server": "cd server && nodemon index.js",
     "client": "cd client && npm start",
-    "install-all": "npm install && cd server && npm install && cd ../client && npm install"
+    "install-all": "npm install && cd server && npm install && cd ../client && npm install",
+    "test-flow": "node test-full-flow-puppeteer.js"
   },
-  "keywords": ["e2ee", "encryption", "messaging", "security"],
+  "keywords": [
+    "e2ee",
+    "encryption",
+    "messaging",
+    "security"
+  ],
   "author": "",
   "license": "MIT",
   "devDependencies": {
+    "axios": "^1.13.2",
     "concurrently": "^8.2.2",
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.0.1",
+    "puppeteer": "^21.11.0"
   }
 }
-

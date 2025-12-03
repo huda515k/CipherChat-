@@ -36,19 +36,45 @@ function Register() {
       // Generate RSA key pair
       const keyPair = await generateRSAKeyPair();
 
-      // Store private key locally (NEVER sent to server)
-      await storePrivateKey('temp', 'rsa', keyPair.privateKey);
+      // Validate keys are strings
+      if (!keyPair.privateKey || typeof keyPair.privateKey !== 'string') {
+        throw new Error('Failed to generate valid private key');
+      }
+      if (!keyPair.publicKey || typeof keyPair.publicKey !== 'string') {
+        throw new Error('Failed to generate valid public key');
+      }
 
-      // Register user with public key
+      // Register user with public key first
       const response = await api.post('/auth/register', {
         username,
         password,
         publicKey: keyPair.publicKey
       });
 
-      // Store private key with actual user ID
-      const userId = response.data.user.id;
+      // Store private key with actual user ID (ensure userId is string)
+      const userId = String(response.data.user.id);
+      
+      // Store private key and verify it was stored
+      console.log('Storing private key for user:', userId);
       await storePrivateKey(userId, 'rsa', keyPair.privateKey);
+      
+      // Wait a bit for IndexedDB to commit
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Verify the key was stored correctly
+      const { getPrivateKey, getAllStoredKeys } = await import('../utils/keyStorage');
+      const verifyKey = await getPrivateKey(userId, 'rsa');
+      if (!verifyKey || verifyKey !== keyPair.privateKey) {
+        // Debug: list all keys
+        const allKeys = await getAllStoredKeys();
+        console.error('All stored keys:', allKeys);
+        throw new Error('Failed to verify private key storage');
+      }
+      console.log('✅ Private key stored and verified for user:', userId);
+      
+      // List all keys for debugging
+      const allKeys = await getAllStoredKeys();
+      console.log('All keys in IndexedDB:', allKeys);
 
       localStorage.setItem('token', response.data.token);
       localStorage.setItem('userId', userId);
@@ -57,7 +83,23 @@ function Register() {
       // Force navigation to ensure state is set
       window.location.href = '/chat';
     } catch (err) {
-      setError(err.response?.data?.error || 'Registration failed');
+      console.error('Registration error:', err);
+      console.error('Error response:', err.response);
+      console.error('Error message:', err.message);
+      
+      // Show specific error message from server
+      let errorMessage = 'Registration failed';
+      if (err.response?.data?.error) {
+        errorMessage = err.response.data.error;
+      } else if (err.message) {
+        errorMessage = err.message;
+      } else if (err.response?.status === 400) {
+        errorMessage = 'Invalid registration data. Please check your input.';
+      } else if (err.response?.status === 500) {
+        errorMessage = 'Server error. Please try again later.';
+      }
+      
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }

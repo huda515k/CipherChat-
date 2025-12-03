@@ -22,10 +22,24 @@ function Login() {
       });
 
       if (response.data && response.data.token) {
+        const userId = String(response.data.user.id);
+        
         // Store authentication data
         localStorage.setItem('token', response.data.token);
-        localStorage.setItem('userId', response.data.user.id);
+        localStorage.setItem('userId', userId);
         localStorage.setItem('username', response.data.user.username);
+
+        // Verify private key exists before redirecting
+        try {
+          const { initKeyStore, getPrivateKey } = await import('../utils/keyStorage');
+          await initKeyStore();
+          await getPrivateKey(userId, 'rsa');
+          console.log('✅ Private key verified for user:', userId);
+        } catch (err) {
+          console.error('❌ Private key not found for user:', userId);
+          setError('Private key not found. Please register again.');
+          return;
+        }
 
         // Force a page reload to ensure state is properly set
         // This ensures the Chat component sees the token

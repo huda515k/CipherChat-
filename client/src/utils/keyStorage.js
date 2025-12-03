@@ -43,21 +43,31 @@ export async function storePrivateKey(userId, keyType, privateKey) {
     await initKeyStore();
   }
 
+  // Validate inputs
+  if (!privateKey || typeof privateKey !== 'string') {
+    throw new Error('Private key must be a valid base64 string');
+  }
+  
+  // Ensure userId is a string
+  const userIdStr = String(userId);
+  const keyTypeStr = String(keyType);
+
   return new Promise((resolve, reject) => {
     const transaction = db.transaction([STORE_NAME], 'readwrite');
     const store = transaction.objectStore(STORE_NAME);
     
     const keyData = {
-      id: `${userId}_${keyType}`,
-      userId,
-      keyType,
-      privateKey,
+      id: `${userIdStr}_${keyTypeStr}`,
+      userId: userIdStr,
+      keyType: keyTypeStr,
+      privateKey: privateKey,
       timestamp: new Date().toISOString()
     };
 
     const request = store.put(keyData);
 
     request.onsuccess = () => {
+      console.log(`Stored private key for user ${userIdStr}, type ${keyTypeStr}`);
       resolve();
     };
 
@@ -75,16 +85,44 @@ export async function getPrivateKey(userId, keyType) {
     await initKeyStore();
   }
 
+  // Ensure userId is a string and handle null/undefined
+  if (!userId) {
+    throw new Error('User ID is required');
+  }
+  const userIdStr = String(userId).trim();
+  const keyTypeStr = String(keyType).trim();
+  const keyId = `${userIdStr}_${keyTypeStr}`;
+
+  console.log(`Looking for private key: ${keyId}`);
+
   return new Promise((resolve, reject) => {
     const transaction = db.transaction([STORE_NAME], 'readonly');
     const store = transaction.objectStore(STORE_NAME);
-    const request = store.get(`${userId}_${keyType}`);
+    const request = store.get(keyId);
 
     request.onsuccess = () => {
-      if (request.result) {
-        resolve(request.result.privateKey);
+      if (request.result && request.result.privateKey) {
+        const privateKey = request.result.privateKey;
+        // Validate the retrieved key
+        if (typeof privateKey !== 'string' || privateKey.length === 0) {
+          reject(new Error(`Invalid private key format for ${keyId}`));
+          return;
+        }
+        console.log(`✅ Retrieved private key for user ${userIdStr}, type ${keyTypeStr}`);
+        resolve(privateKey);
       } else {
-        reject(new Error('Private key not found'));
+        // List all keys for debugging
+        const allKeysRequest = store.getAll();
+        allKeysRequest.onsuccess = () => {
+          const allKeys = allKeysRequest.result.map(k => ({ id: k.id, userId: k.userId, keyType: k.keyType }));
+          console.error(`❌ Private key not found for ${keyId}`);
+          console.error('Available keys in IndexedDB:', allKeys);
+          console.error('Looking for userId:', userIdStr, 'keyType:', keyTypeStr);
+          reject(new Error(`Private key not found for user ${userIdStr}, type ${keyTypeStr}`));
+        };
+        allKeysRequest.onerror = () => {
+          reject(new Error(`Private key not found for user ${userIdStr}, type ${keyTypeStr}`));
+        };
       }
     };
 
@@ -331,6 +369,37 @@ export async function clearTempECDHKey(userId, targetUserId, isInitiator) {
 
     request.onerror = () => {
       reject(new Error('Failed to clear temporary ECDH key'));
+    };
+  });
+}
+
+/**
+ * Get all stored keys (for debugging)
+ */
+export async function getAllStoredKeys() {
+  if (!db) {
+    await initKeyStore();
+  }
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_NAME], 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.getAll();
+
+    request.onsuccess = () => {
+      const keys = request.result.map(k => ({
+        id: k.id,
+        userId: k.userId,
+        keyType: k.keyType,
+        hasPrivateKey: !!k.privateKey,
+        privateKeyLength: k.privateKey ? k.privateKey.length : 0,
+        timestamp: k.timestamp
+      }));
+      resolve(keys);
+    };
+
+    request.onerror = () => {
+      reject(new Error('Failed to get all keys'));
     };
   });
 }

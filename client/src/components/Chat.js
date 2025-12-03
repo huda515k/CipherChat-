@@ -8,7 +8,16 @@ import { getPrivateKey, getSessionKey } from '../utils/keyStorage';
 import { performFullKeyExchange, respondToIncomingKeyExchange } from '../utils/keyExchange';
 import './Chat.css';
 
-const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5001';
+// Auto-detect protocol based on current page protocol
+const getSocketURL = () => {
+  if (process.env.REACT_APP_SOCKET_URL) {
+    return process.env.REACT_APP_SOCKET_URL;
+  }
+  // Use same protocol as the current page
+  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+  return `${protocol}//localhost:5001`;
+};
+const SOCKET_URL = getSocketURL();
 
 function Chat() {
   const [users, setUsers] = useState([]);
@@ -21,7 +30,7 @@ function Chat() {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const messagesEndRef = useRef(null);
   const navigate = useNavigate();
-  const userId = localStorage.getItem('userId');
+  const userId = localStorage.getItem('userId') ? String(localStorage.getItem('userId')) : null;
   const username = localStorage.getItem('username');
 
   useEffect(() => {
@@ -35,11 +44,78 @@ function Chat() {
       return;
     }
 
-    // Initialize socket connection
-    const newSocket = io(SOCKET_URL);
-    newSocket.emit('join-room', currentUserId);
-    setSocket(newSocket);
+    // Initialize IndexedDB and verify private key exists
+    const initializeAndVerify = async () => {
+      try {
+        const { initKeyStore } = await import('../utils/keyStorage');
+        await initKeyStore();
+        
+        // Verify private key exists
+        const { getPrivateKey } = await import('../utils/keyStorage');
+        const userIdStr = String(currentUserId);
+        try {
+          await getPrivateKey(userIdStr, 'rsa');
+          console.log('✅ Private key verified for user:', userIdStr);
+        } catch (err) {
+          console.error('❌ Private key not found for user:', userIdStr);
+          console.error('Error:', err.message);
+          alert('Private key not found. Please register again. Your keys may have been cleared.');
+          localStorage.clear();
+          navigate('/register', { replace: true });
+          return;
+        }
+      } catch (error) {
+        console.error('Failed to initialize key store:', error);
+      }
+    };
+    
+    initializeAndVerify();
 
+    // Initialize socket connection with better config
+    const newSocket = io(SOCKET_URL, {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      timeout: 10000
+    });
+    
+    newSocket.on('connect', () => {
+      console.log('🔌 Socket connected, ID:', newSocket.id);
+      const userIdToJoin = String(currentUserId);
+      console.log('🚪 Joining room for user:', userIdToJoin);
+      newSocket.emit('join-room', userIdToJoin);
+      console.log('✅ Join-room event emitted');
+    });
+    
+    newSocket.on('connect_error', (error) => {
+      console.error('❌ Socket connection error:', error);
+    });
+    
+    newSocket.on('disconnect', (reason) => {
+      console.warn('⚠️ Socket disconnected:', reason);
+    });
+    
+    setSocket(newSocket);
+    
+    // Initialize global callback storage for key exchange
+    if (!window._keyExchangeCallbacks) {
+      window._keyExchangeCallbacks = {};
+    }
+
+    // Listen for key exchange response
+    newSocket.on('key-exchange-response', async (data) => {
+      console.log('🔔 KEY EXCHANGE RESPONSE RECEIVED IN CHAT:', data);
+      
+      // Trigger the waiting promise resolver
+      if (window._keyExchangeCallbacks && window._keyExchangeCallbacks[data.keyExchangeId]) {
+        const callback = window._keyExchangeCallbacks[data.keyExchangeId];
+        await callback(data);
+      }
+    });
+    
+    // Listen for incoming key exchange init (REMOVED DUPLICATE - handler is below at line 194)
+    
     // Listen for new messages
     newSocket.on('new-message', async (data) => {
       console.log('New message received via socket:', data);
@@ -71,23 +147,84 @@ function Chat() {
 
     // Listen for incoming key exchange requests
     newSocket.on('key-exchange-init', async (data) => {
-      console.log('Incoming key exchange request:', data);
-      try {
-        const rsaPrivateKey = await getPrivateKey(currentUserId, 'rsa');
-        const rsaPublicKey = await api.get(`/users/${currentUserId}/public-key`);
-        
-        await respondToIncomingKeyExchange(
-          currentUserId,
-          data.keyExchangeId,
-          rsaPrivateKey,
-          rsaPublicKey.data.publicKey,
-          (endpoint, data) => api.post(endpoint, data)
-        );
-        
-        console.log('Responded to key exchange request');
-      } catch (error) {
-        console.error('Error responding to key exchange:', error);
-      }
+      console.log('🔔🔔🔔 INCOMING KEY EXCHANGE REQUEST RECEIVED 🔔🔔🔔');
+      console.log('Full data:', JSON.stringify(data, null, 2));
+      console.log('Key exchange ID:', data.keyExchangeId);
+      console.log('Initiator ID:', data.initiatorId);
+      
+      // IMPORTANT: Don't use the encrypted data from socket event - fetch it from server instead
+      // Socket events might truncate large JSON strings. Always fetch from API.
+      console.log('⚠️  Note: Ignoring encrypted data from socket event, will fetch from server API');
+      
+      // Use a separate async function to handle the response so errors don't break the socket listener
+      (async () => {
+        try {
+          const currentUserIdStr = String(localStorage.getItem('userId'));
+          console.log('Current user ID:', currentUserIdStr);
+          console.log('Socket ID:', newSocket.id);
+          console.log('Socket connected:', newSocket.connected);
+          
+          if (!currentUserIdStr || currentUserIdStr === 'null' || currentUserIdStr === 'undefined') {
+            throw new Error('User ID not found in localStorage');
+          }
+          
+          // Verify this key exchange is for us
+          // The server should have already filtered, but double-check
+          console.log('📥 Retrieving private key...');
+          const rsaPrivateKey = await getPrivateKey(currentUserIdStr, 'rsa');
+          console.log('✅ Private key retrieved for response');
+          console.log('   Private key length:', rsaPrivateKey.length);
+          
+          console.log('📥 Retrieving public key...');
+          const rsaPublicKeyResponse = await api.get(`/users/${currentUserIdStr}/public-key`);
+          const rsaPublicKey = rsaPublicKeyResponse.data.publicKey;
+          console.log('✅ Public key retrieved for response');
+          console.log('   Public key length:', rsaPublicKey.length);
+          
+          // Create API call wrapper that supports both GET and POST
+          const apiCallWrapper = {
+            get: async (endpoint) => {
+              if (endpoint.startsWith('/')) {
+                return await api.get(endpoint);
+              }
+              return await api.get(`/${endpoint}`);
+            },
+            post: async (endpoint, data) => {
+              if (endpoint.startsWith('/')) {
+                return await api.post(endpoint, data);
+              }
+              return await api.post(`/${endpoint}`, data);
+            }
+          };
+          
+          console.log('🔄 Starting response to key exchange...');
+          console.log('Calling respondToIncomingKeyExchange with:');
+          console.log('  - userId:', currentUserIdStr);
+          console.log('  - keyExchangeId:', data.keyExchangeId);
+          console.log('  - rsaPrivateKey length:', rsaPrivateKey.length);
+          console.log('  - rsaPublicKey length:', rsaPublicKey.length);
+          console.log('  - NOTE: Will fetch encrypted data from server API (not socket event)');
+          
+          await respondToIncomingKeyExchange(
+            currentUserIdStr,
+            data.keyExchangeId,
+            rsaPrivateKey,
+            rsaPublicKey,
+            apiCallWrapper
+          );
+          
+          console.log('✅✅✅ Successfully responded to key exchange request ✅✅✅');
+        } catch (error) {
+          console.error('❌❌❌ ERROR RESPONDING TO KEY EXCHANGE ❌❌❌');
+          console.error('Error type:', error.constructor.name);
+          console.error('Error message:', error.message);
+          console.error('Error stack:', error.stack);
+          console.error('Full error:', error);
+          
+          // Don't show alert - it's too intrusive. Just log it.
+          // The user will see the timeout error from the initiator
+        }
+      })();
     });
 
     // Listen for key exchange completion
@@ -99,9 +236,96 @@ function Chat() {
       }
     });
 
+    // POLLING FALLBACK: Check for pending key exchanges every 5 seconds
+    // This ensures we respond even if the socket event doesn't reach us
+    const checkPendingKeyExchanges = async () => {
+      try {
+        const currentUserIdStr = String(localStorage.getItem('userId'));
+        if (!currentUserIdStr || currentUserIdStr === 'null' || currentUserIdStr === 'undefined') {
+          return;
+        }
+
+        // Get all pending key exchanges where we are the responder
+        const response = await api.get('/key-exchange/pending');
+        const pendingExchanges = response.data.pendingExchanges || [];
+        
+        if (pendingExchanges.length > 0) {
+          console.log(`🔍 Found ${pendingExchanges.length} pending key exchange(s), processing...`);
+          
+          for (const exchange of pendingExchanges) {
+            console.log(`   Processing key exchange: ${exchange._id}`);
+            console.log(`   Initiator: ${exchange.initiatorId}`);
+            console.log(`   Status: ${exchange.status}`);
+            
+            // Process this key exchange
+            try {
+              // Skip if encryptedInit is missing or too short (corrupted)
+              if (!exchange.encryptedInit || exchange.encryptedInit.length < 300) {
+                console.log(`⚠️ Skipping corrupted key exchange ${exchange._id} (encryptedInit too short: ${exchange.encryptedInit?.length || 0} chars)`);
+                continue;
+              }
+              
+              const rsaPrivateKey = await getPrivateKey(currentUserIdStr, 'rsa');
+              const rsaPublicKeyResponse = await api.get(`/users/${currentUserIdStr}/public-key`);
+              const rsaPublicKey = rsaPublicKeyResponse.data.publicKey;
+              
+              const apiCallWrapper = {
+                get: async (endpoint) => {
+                  if (endpoint.startsWith('/')) {
+                    return await api.get(endpoint);
+                  }
+                  return await api.get(`/${endpoint}`);
+                },
+                post: async (endpoint, data) => {
+                  if (endpoint.startsWith('/')) {
+                    return await api.post(endpoint, data);
+                  }
+                  return await api.post(`/${endpoint}`, data);
+                }
+              };
+              
+              await respondToIncomingKeyExchange(
+                currentUserIdStr,
+                exchange._id,
+                rsaPrivateKey,
+                rsaPublicKey,
+                apiCallWrapper
+              );
+              
+              console.log(`✅ Successfully responded to key exchange ${exchange._id} via polling`);
+            } catch (error) {
+              // Skip corrupted key exchanges silently
+              if (error.message && (error.message.includes('too small') || error.message.includes('corrupted') || error.message.includes('truncation'))) {
+                console.log(`⚠️ Skipping corrupted key exchange ${exchange._id}: ${error.message}`);
+                continue;
+              }
+              console.error(`❌ Failed to respond to key exchange ${exchange._id}:`, error.message);
+            }
+          }
+        }
+      } catch (error) {
+        // Silently fail - this is just a fallback mechanism
+        if (error.response?.status !== 404) {
+          console.error('Error checking pending key exchanges:', error.message);
+        }
+      }
+    };
+    
+    // Check immediately, then every 2 seconds for faster response
+    checkPendingKeyExchanges();
+    const pendingCheckInterval = setInterval(checkPendingKeyExchanges, 2000);
+    
+    console.log('✅ Started polling for pending key exchanges (every 5 seconds)');
+
     // Load users and conversations
     loadUsers();
     loadConversations();
+    
+    // Cleanup interval on unmount
+    return () => {
+      clearInterval(pendingCheckInterval);
+      newSocket.close();
+    };
 
     return () => {
       newSocket.close();
@@ -144,39 +368,65 @@ function Chat() {
         throw new Error('Target user ID is missing');
       }
       
+      // Ensure userId is a string
+      const userIdStr = String(userId);
+      const targetUserIdStr = String(targetUserId);
+      
       // Check if session already exists (try both directions)
       try {
-        await getSessionKey(userId, targetUserId);
-        console.log('Session already exists');
+        await getSessionKey(userIdStr, targetUserIdStr);
+        console.log('✅ Session already exists');
         return; // Session exists, no need to create
       } catch (err) {
-        console.log('No existing session, initiating full key exchange...');
+        console.log('⚠️ No existing session, initiating key exchange...');
       }
       
       // Get RSA private key for key exchange
-      const rsaPrivateKey = await getPrivateKey(userId, 'rsa');
+      const rsaPrivateKey = await getPrivateKey(userIdStr, 'rsa');
       
       // Get target user's public key
-      const targetUserResponse = await api.get(`/users/${targetUserId}/public-key`);
+      const targetUserResponse = await api.get(`/users/${targetUserIdStr}/public-key`);
       const targetRSAPublicKey = targetUserResponse.data.publicKey;
       
-      console.log('Initiating full ECDH key exchange protocol...');
+      // Validate public key
+      if (!targetRSAPublicKey || typeof targetRSAPublicKey !== 'string') {
+        throw new Error(`Invalid public key received from server: ${typeof targetRSAPublicKey}`);
+      }
       
-      // Perform full key exchange
-      const result = await performFullKeyExchange(
-        userId,
-        targetUserId,
+      console.log('🚀 Initiating key exchange (10s timeout)...');
+      
+      // Create API call wrapper
+      const apiCallWrapper = {
+        get: async (endpoint) => await api.get(endpoint),
+        post: async (endpoint, data) => await api.post(endpoint, data)
+      };
+      
+      // Perform full key exchange with timeout
+      const exchangePromise = performFullKeyExchange(
+        userIdStr,
+        targetUserIdStr,
         rsaPrivateKey,
         targetRSAPublicKey,
-        (endpoint, data) => api.post(endpoint, data),
+        apiCallWrapper,
         socket
       );
       
-      console.log('Key exchange completed successfully!');
-      console.log('Session established for:', userId, '->', targetUserId);
+      // Add timeout wrapper (increased to 30s for reliability)
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Key exchange timeout: Please try again')), 30000);
+      });
+      
+      const result = await Promise.race([exchangePromise, timeoutPromise]);
+      
+      console.log('✅ Key exchange completed successfully!');
+      console.log('✅ Session established for:', userIdStr, '->', targetUserIdStr);
     } catch (error) {
-      console.error('Error establishing session:', error);
-      alert(`Failed to establish secure session: ${error.message}. Please try again.`);
+      console.error('❌ Error establishing session:', error);
+      // Don't show alert if called in background - just log
+      if (error.message.includes('timeout')) {
+        console.warn('Key exchange timed out - user can retry by sending a message');
+      }
+      throw error; // Re-throw so caller can handle
     }
   };
 
@@ -184,12 +434,16 @@ function Chat() {
     if (!targetUserId) return;
 
     try {
-      const response = await api.get(`/messages/conversation/${targetUserId}`);
+      // Ensure userIds are strings
+      const userIdStr = String(userId);
+      const targetUserIdStr = String(targetUserId);
+      
+      const response = await api.get(`/messages/conversation/${targetUserIdStr}`);
       const encryptedMessages = response.data;
 
       // Ensure session exists before trying to decrypt
       try {
-        await getSessionKey(userId, targetUserId);
+        await getSessionKey(userIdStr, targetUserIdStr);
       } catch (err) {
         console.log('No session found when loading messages, establishing...');
         // Try to establish session if we have the user info
@@ -202,12 +456,12 @@ function Chat() {
       const decryptedMessages = await Promise.all(
         encryptedMessages.map(async (msg) => {
           try {
-            const isSent = msg.senderId === userId;
-            const otherUserId = isSent ? msg.receiverId : msg.senderId;
+            const isSent = String(msg.senderId) === userIdStr;
+            const otherUserId = isSent ? String(msg.receiverId) : String(msg.senderId);
             
             // Ensure session exists for this conversation
             try {
-              await getSessionKey(userId, otherUserId);
+              await getSessionKey(userIdStr, otherUserId);
             } catch (err) {
               console.log('No session for message decryption, establishing...');
               // Create a temporary user object to establish session
@@ -215,7 +469,7 @@ function Chat() {
               await establishSession(tempUser);
             }
             
-            const decrypted = await decryptMessage(userId, otherUserId, {
+            const decrypted = await decryptMessage(userIdStr, otherUserId, {
               ciphertext: msg.ciphertext,
               iv: msg.iv,
               tag: msg.tag,
@@ -257,29 +511,36 @@ function Chat() {
     if (!newMessage.trim() || !selectedUser) return;
 
     setLoading(true);
+    const messageText = newMessage.trim();
+    setNewMessage(''); // Clear input immediately for better UX
+    
     try {
-      // Ensure session is established before sending
+      // Ensure userIds are strings
+      const userIdStr = String(userId);
+      const receiverIdStr = String(selectedUser._id || selectedUser.id);
+      
+      // Check if session exists (non-blocking check)
+      let sessionExists = false;
       try {
-        await getSessionKey(userId, selectedUser._id);
+        await getSessionKey(userIdStr, receiverIdStr);
+        sessionExists = true;
       } catch (err) {
-        console.log('No session found, establishing...');
-        await establishSession(selectedUser);
+        console.log('No session found, establishing in background...');
+        // Start key exchange in background (non-blocking)
+        establishSession(selectedUser).catch(err => {
+          console.error('Background key exchange failed:', err);
+        });
+        // Show user-friendly message
+        alert('Establishing secure connection... Please try sending again in a moment.');
+        setLoading(false);
+        return;
       }
 
-      // Encrypt message
-      const encrypted = await encryptMessage(userId, selectedUser._id, newMessage);
+      // Encrypt message (only if session exists)
+      const encrypted = await encryptMessage(userIdStr, receiverIdStr, messageText);
       
       console.log('Encrypted message data:', encrypted);
       console.log('Receiver ID:', selectedUser._id);
-
-      // Prepare message payload
-      // Handle both _id and id formats
-      const receiverId = selectedUser._id || selectedUser.id;
-      
-      if (!receiverId) {
-        console.error('Selected user:', selectedUser);
-        throw new Error('Receiver ID is missing. Selected user: ' + JSON.stringify(selectedUser));
-      }
 
       // Validate all encrypted fields
       if (!encrypted.ciphertext || !encrypted.iv || !encrypted.tag || !encrypted.nonce || encrypted.sequenceNumber === undefined) {
@@ -288,7 +549,7 @@ function Chat() {
       }
 
       const messagePayload = {
-        receiverId: String(receiverId), // Ensure it's a string
+        receiverId: receiverIdStr, // Already a string
         ciphertext: encrypted.ciphertext,
         iv: encrypted.iv,
         tag: encrypted.tag,
@@ -302,9 +563,9 @@ function Chat() {
       const response = await api.post('/messages/send', messagePayload);
 
       console.log('Message sent successfully:', response.data);
-      setNewMessage('');
-      await loadMessages(selectedUser._id);
-      await loadConversations(); // Refresh conversations list
+      // Don't await - load messages in background for faster UX
+      loadMessages(receiverIdStr).catch(err => console.error('Error loading messages:', err));
+      loadConversations().catch(err => console.error('Error loading conversations:', err));
     } catch (error) {
       console.error('Error sending message:', error);
       const errorMessage = error.response?.data?.error || error.message || 'Failed to send message';
@@ -320,24 +581,26 @@ function Chat() {
 
     setLoading(true);
     try {
+      // Ensure userIds are strings
+      const userIdStr = String(userId);
+      const receiverIdStr = String(selectedUser._id || selectedUser.id);
+      
+      if (!receiverIdStr) {
+        throw new Error('Receiver ID is missing');
+      }
+      
       // Ensure session is established before encrypting
       try {
-        await getSessionKey(userId, selectedUser._id);
+        await getSessionKey(userIdStr, receiverIdStr);
       } catch (err) {
         console.log('No session found for file upload, establishing...');
         await establishSession(selectedUser);
       }
 
-      // Get receiver ID
-      const receiverId = selectedUser._id || selectedUser.id;
-      if (!receiverId) {
-        throw new Error('Receiver ID is missing');
-      }
-
       console.log('Encrypting file:', file.name, 'Size:', file.size);
 
       // Encrypt file
-      const encrypted = await encryptFile(userId, receiverId, file);
+      const encrypted = await encryptFile(userIdStr, receiverIdStr, file);
 
       console.log('File encrypted, chunks:', encrypted.chunks.length);
       console.log('Encrypted data:', {
@@ -364,7 +627,7 @@ function Chat() {
       // Create FormData with validated data
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('receiverId', String(receiverId));
+      formData.append('receiverId', receiverIdStr);
       formData.append('originalFilename', String(encrypted.originalFilename));
       formData.append('mimeType', String(encrypted.mimeType || file.type || 'application/octet-stream'));
       formData.append('chunks', JSON.stringify(encrypted.chunks));
@@ -372,7 +635,7 @@ function Chat() {
 
       // Log FormData contents for debugging
       console.log('=== FormData Validation ===');
-      console.log('receiverId:', String(receiverId), typeof receiverId);
+      console.log('receiverId:', receiverIdStr, typeof receiverIdStr);
       console.log('originalFilename:', String(encrypted.originalFilename));
       console.log('mimeType:', String(encrypted.mimeType || file.type || 'application/octet-stream'));
       console.log('nonce:', String(encrypted.nonce), 'length:', String(encrypted.nonce).length);
@@ -381,7 +644,7 @@ function Chat() {
       
       // Verify all fields are set
       const allFieldsSet = [
-        String(receiverId),
+        receiverIdStr,
         String(encrypted.originalFilename),
         String(encrypted.mimeType || file.type || 'application/octet-stream'),
         String(encrypted.nonce),
@@ -390,7 +653,7 @@ function Chat() {
       
       if (!allFieldsSet) {
         console.error('Some fields are invalid:', {
-          receiverId: String(receiverId),
+          receiverId: receiverIdStr,
           originalFilename: String(encrypted.originalFilename),
           mimeType: String(encrypted.mimeType || file.type || 'application/octet-stream'),
           nonce: String(encrypted.nonce),
@@ -424,10 +687,10 @@ function Chat() {
       const fileMessage = `📎 File: ${encrypted.originalFilename}${fileSizeMB}`;
       
       // Encrypt and send the file notification message
-      const encryptedMessage = await encryptMessage(userId, receiverId, fileMessage);
+      const encryptedMessage = await encryptMessage(userIdStr, receiverIdStr, fileMessage);
       
       const messageResponse = await api.post('/messages/send', {
-        receiverId: String(receiverId),
+        receiverId: receiverIdStr,
         ciphertext: encryptedMessage.ciphertext,
         iv: encryptedMessage.iv,
         tag: encryptedMessage.tag,
@@ -439,13 +702,13 @@ function Chat() {
       console.log('File message sent:', messageResponse.data);
       
       // Reload messages to show the new file message
-      await loadMessages(receiverId);
+      await loadMessages(receiverIdStr);
       await loadConversations(); // Refresh conversations list
       
       // Also notify via socket (in case receiver is online)
       if (socket) {
         socket.emit('message-sent', {
-          receiverId: String(receiverId),
+          receiverId: receiverIdStr,
           messageId: messageResponse.data.messageId
         });
       }

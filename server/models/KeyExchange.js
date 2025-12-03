@@ -20,13 +20,27 @@ const keyExchangeSchema = new mongoose.Schema({
     index: true
   },
   // Step 1: Initiate
-  encryptedInit: String,
-  initSignature: String,
-  initiatorECDHPublicKey: String,
+  // CRITICAL FIX: Use Mixed type to prevent truncation that occurs with String type
+  encryptedInit: {
+    type: mongoose.Schema.Types.Mixed, // Changed from String to prevent truncation
+    required: true
+  },
+  initSignature: {
+    type: mongoose.Schema.Types.Mixed // Changed from String
+  },
+  initiatorECDHPublicKey: {
+    type: mongoose.Schema.Types.Mixed // Changed from String
+  },
   // Step 2: Respond
-  encryptedResponse: String,
-  responseSignature: String,
-  responderECDHPublicKey: String,
+  encryptedResponse: {
+    type: mongoose.Schema.Types.Mixed // Changed from String to prevent truncation
+  },
+  responseSignature: {
+    type: mongoose.Schema.Types.Mixed // Changed from String
+  },
+  responderECDHPublicKey: {
+    type: mongoose.Schema.Types.Mixed // Changed from String
+  },
   // Step 3: Complete
   encryptedConfirmation: String,
   confirmationIV: String,
@@ -40,7 +54,7 @@ const keyExchangeSchema = new mongoose.Schema({
   completedAt: Date,
   expiresAt: {
     type: Date,
-    default: () => new Date(Date.now() + 5 * 60 * 1000) // 5 minutes
+    default: () => new Date(Date.now() + 30 * 60 * 1000) // 30 minutes (increased for debugging)
   }
 });
 

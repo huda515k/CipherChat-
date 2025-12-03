@@ -4,10 +4,13 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
+const https = require('https');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 
 // Middleware
 app.use(helmet({
@@ -23,6 +26,9 @@ app.use(cors({
       'http://localhost:3000',
       'http://localhost:3001',
       'http://localhost:3002',
+      'https://localhost:3000',
+      'https://localhost:3001',
+      'https://localhost:3002',
       process.env.CLIENT_URL
     ].filter(Boolean);
     
@@ -38,12 +44,29 @@ app.use(express.json({ limit: '200mb' }));
 app.use(express.urlencoded({ extended: true, limit: '200mb' }));
 app.use(morgan('combined'));
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
-});
-app.use('/api/', limiter);
+// Rate limiting - Disabled for development, enable in production
+if (process.env.NODE_ENV === 'production') {
+  const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 1000 // limit each IP to 1000 requests per windowMs
+  });
+
+  // Apply rate limiting to most routes, but exclude key-exchange polling and health check
+  app.use('/api/', (req, res, next) => {
+    // Exclude key-exchange GET requests from rate limiting (polling)
+    if (req.path.startsWith('/key-exchange/') && req.method === 'GET') {
+      return next();
+    }
+    // Exclude health check
+    if (req.path === '/health') {
+      return next();
+    }
+    limiter(req, res, next);
+  });
+} else {
+  // Development: No rate limiting
+  console.log('Rate limiting disabled for development');
+}
 
 // Database connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/e2ee_messaging', {
@@ -131,39 +154,111 @@ app.use((err, req, res, next) => {
   });
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+// Try to use HTTPS if certificates exist, otherwise fall back to HTTP
+let server;
+const certPath = path.join(__dirname, 'certs', 'cert.pem');
+const keyPath = path.join(__dirname, 'certs', 'key.pem');
+
+try {
+  if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+    const options = {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath)
+    };
+    server = https.createServer(options, app);
+    server.listen(PORT, () => {
+      console.log(`HTTPS Server running on port ${PORT}`);
+    });
+  } else {
+    throw new Error('Certificates not found, using HTTP');
+  }
+} catch (error) {
+  console.warn('HTTPS setup failed, using HTTP:', error.message);
+  server = app.listen(PORT, () => {
+    console.log(`HTTP Server running on port ${PORT}`);
+  });
+}
 
 // Socket.io setup for real-time messaging
 const io = require('socket.io')(server, {
   cors: {
-    origin: process.env.CLIENT_URL || ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:3002'],
-    methods: ['GET', 'POST']
-  }
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      
+      const allowedOrigins = [
+        'http://localhost:3000',
+        'http://localhost:3001',
+        'http://localhost:3002',
+        'https://localhost:3000',
+        'https://localhost:3001',
+        'https://localhost:3002',
+        'http://127.0.0.1:3000',
+        'http://127.0.0.1:3001',
+        'http://127.0.0.1:3002',
+        'https://127.0.0.1:3000',
+        'https://127.0.0.1:3001',
+        'https://127.0.0.1:3002'
+      ];
+      
+      if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+        callback(null, true);
+      } else {
+        callback(null, true); // Allow all for development, restrict in production
+      }
+    },
+    methods: ['GET', 'POST'],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
+  },
+  transports: ['websocket', 'polling'], // Try both
+  pingTimeout: 60000,
+  pingInterval: 25000
 });
 
+// Store user socket mappings
+const userSockets = new Map(); // userId -> socketId
+
 io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
+  console.log('✅ Client connected:', socket.id);
 
   socket.on('join-room', (userId) => {
-    socket.join(`user-${userId}`);
-    console.log(`User ${userId} joined their room: user-${userId}`);
+    const userIdStr = String(userId);
+    // FIX: Use underscore to match backend routes
+    const roomName = `user_${userIdStr}`;
+    socket.join(roomName);
+    console.log(`✅ User ${userIdStr} joined room ${roomName}`);
+    
+    // Store mapping
+    userSockets.set(userIdStr, socket.id);
+    socket.userId = userIdStr; // Store on socket for later use
+    
+    console.log(`👤 User ${userIdStr} joined room: ${roomName}`);
+    console.log(`   Socket ID: ${socket.id}`);
+    console.log(`   Active users: ${userSockets.size}`);
+    
+    // Verify room membership
+    const socketsInRoom = io.sockets.adapter.rooms.get(roomName);
+    console.log(`   Total sockets in room: ${socketsInRoom ? socketsInRoom.size : 0}`);
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('❌ Client disconnected:', socket.id);
+    if (socket.userId) {
+      userSockets.delete(socket.userId);
+      console.log('👤 User', socket.userId, 'removed. Active users:', userSockets.size);
+    }
   });
 
   socket.on('message-sent', (data) => {
     console.log('Message sent event received:', data);
-    // Forward to receiver if needed
+    // Forward to receiver if needed - FIX: Use underscore to match join-room
     if (data.receiverId) {
-      io.to(`user-${data.receiverId}`).emit('new-message', {
+      io.to(`user_${data.receiverId}`).emit('new-message', {
         messageId: data.messageId,
         senderId: data.senderId
       });
     }
-  });
-
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
   });
 });
 

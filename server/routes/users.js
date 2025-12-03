@@ -11,13 +11,34 @@ router.use(authenticateToken);
 router.get('/search/:username', async (req, res) => {
   try {
     const { username } = req.params;
-    const user = await User.findOne({ username })
+    console.log(`🔍 Searching for user: "${username}"`);
+    
+    // Try exact match first
+    let user = await User.findOne({ username })
       .select('username publicKey _id')
       .lean();
-
+    
+    // If not found, try case-insensitive search
     if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+      console.log(`   Exact match not found, trying case-insensitive...`);
+      user = await User.findOne({ 
+        username: { $regex: new RegExp(`^${username}$`, 'i') }
+      })
+      .select('username publicKey _id')
+      .lean();
     }
+    
+    // If still not found, list all users for debugging
+    if (!user) {
+      const allUsers = await User.find({}).select('username _id').lean();
+      console.log(`   User not found. Available users:`, allUsers.map(u => u.username));
+      return res.status(404).json({ 
+        error: 'User not found',
+        availableUsers: allUsers.map(u => u.username)
+      });
+    }
+    
+    console.log(`✅ Found user: ${user.username} (${user._id})`);
 
     // Log metadata access
     await SecurityLog.create({
